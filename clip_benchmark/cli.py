@@ -176,6 +176,7 @@ def run(args):
             model_name=args.model,
             pretrained=args.pretrained,
             cache_dir=args.model_cache_dir,
+            batch_size=args.batch_size,
             device=args.device
         )
         model.eval()
