@@ -4,8 +4,8 @@ def load_onnx_clip(model_name: str = "ViT-B-32-quickgelu", pretrained: str = "la
     model, _, transform = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, cache_dir=cache_dir)
 
     model = CLIPOnnxModel(name=f"{model_name}::{pretrained}")
-    # model.start_sessions(dtype=None, providers=['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
-    model.start_sessions(dtype=None, providers=['CPUExecutionProvider'], batch_size=batch_size)
+    providers = ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'] if torch.cuda.is_available() else ['CPUExecutionProvider']
+    model.start_sessions(providers=providers, batch_size=batch_size)
 
     tokenizer = open_clip.get_tokenizer(model_name)
     return model, transform, tokenizer
@@ -14,7 +14,7 @@ def load_deepsparse_clip(model_name: str = "ViT-B-32-quickgelu", pretrained: str
     model, _, transform = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, cache_dir=cache_dir)
 
     model = CLIPDeepsparseModel(name=f"{model_name}::{pretrained}")
-    model.start_sessions(dtype=None, batch_size=batch_size)
+    model.start_sessions(batch_size=batch_size, providers=['CPUExecutionProvider'])
 
     tokenizer = open_clip.get_tokenizer(model_name)
     return model, transform, tokenizer
@@ -39,21 +39,21 @@ class CLIPOnnxModel(BaseCLIPModel):
         super().__init__(name)
         self._dtype = dtype
         if name in _MODELS:
+            self._cache_dir = os.path.expanduser(
+                f'~/.cache/clip/{name.replace("/", "-").replace("::", "-")}'
+            )
             if not model_path:
-                cache_dir = os.path.expanduser(
-                    f'~/.cache/clip/{name.replace("/", "-").replace("::", "-")}'
-                )
                 textual_model_name, textual_model_md5 = _MODELS[name][0]
                 self._textual_path = download_model(
                     url=_S3_BUCKET_V2 + textual_model_name,
-                    target_folder=cache_dir,
+                    target_folder=self._cache_dir,
                     md5sum=textual_model_md5,
                     with_resume=True,
                 )
                 visual_model_name, visual_model_md5 = _MODELS[name][1]
                 self._visual_path = download_model(
                     url=_S3_BUCKET_V2 + visual_model_name,
-                    target_folder=cache_dir,
+                    target_folder=self._cache_dir,
                     md5sum=visual_model_md5,
                     with_resume=True,
                 )
@@ -82,124 +82,115 @@ class CLIPOnnxModel(BaseCLIPModel):
 
     def start_sessions(
         self,
-        dtype,
+        batch_size,
         **kwargs,
     ):
         import onnxruntime as ort
 
-        def _load_session(model_path: str, model_type: str, dtype: str):
-            if model_path.endswith('.zip') or dtype == 'fp16':
-                import tempfile
+        self._batch_size = batch_size
 
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    tmp_model_path = tmp_dir + f'/{model_type}.onnx'
-                    if model_path.endswith('.zip'):
-                        import zipfile
+        # Optional overrides
+        visual_model = os.environ.get("VISUAL_MODEL", "visual.onnx")
+        textual_model = os.environ.get("TEXTUAL_MODEL", "textual.onnx")
+        print(visual_model, textual_model)
 
-                        with zipfile.ZipFile(model_path, 'r') as zip_ref:
-                            zip_ref.extractall(tmp_dir)
-                            model_path = tmp_model_path
-                    if dtype == 'fp16':
-                        import onnx
-                        from onnxmltools.utils import float16_converter
+        self._visual_path = f"{self._cache_dir}/{visual_model}"
+        self._textual_path = f"{self._cache_dir}/{textual_model}"
+        print("Compiling models..")
+        print(self._visual_path)
+        print(self._textual_path)
 
-                        model_fp16 = (
-                            float16_converter.convert_float_to_float16_model_path(
-                                model_path
-                            )
-                        )
-                        onnx.save_model(model_fp16, tmp_model_path)
-                    return ort.InferenceSession(tmp_model_path, **kwargs)
-            return ort.InferenceSession(model_path, **kwargs)
-
-        self._visual_session = _load_session(self._visual_path, 'visual', dtype)
-        self._textual_session = _load_session(self._textual_path, 'textual', dtype)
+        self._visual_session = ort.InferenceSession(self._visual_path, **kwargs)
+        self._textual_session = ort.InferenceSession(self._textual_path, **kwargs)
         self._visual_session.disable_fallback()
         self._textual_session.disable_fallback()
 
+        self.max_samples = int(os.environ.get("MAX_SAMPLES", 500))
+        self.textual_samples = []
+        self.visual_samples = []
+
     def encode_image(self, image_input: Dict):
         pixel_values = numpy.array(image_input.cpu())
+        for i in range(pixel_values.shape[0]):
+            if len(self.visual_samples) < self.max_samples:
+                self.visual_samples.append([pixel_values[i]])
         (visual_output,) = self._visual_session.run(None, {'pixel_values':pixel_values})
-        return torch.Tensor(visual_output).to("cpu")
+        return torch.Tensor(visual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def encode_text(self, text_input: Dict):
         input_ids = numpy.array(text_input.cpu(), dtype=numpy.int32)
         attention_mask = (input_ids != 0).astype(numpy.int32)
+        for i in range(input_ids.shape[0]):
+            if len(self.textual_samples) < self.max_samples:
+                self.textual_samples.append([input_ids[i], attention_mask[i]])
         (textual_output,) = self._textual_session.run(None, {'input_ids':input_ids, 'attention_mask':attention_mask})
-        return torch.Tensor(textual_output).to("cpu")
+        return torch.Tensor(textual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    def sparsify_model(self, original_onnx_path, sample_inputs):
+        from sparsifyml.one_shot import sparsify_fast
+        import onnx
+        model = onnx.load(original_onnx_path)
+        IGNORE_LIST = [node.op_type for node in model.graph.node if node.op_type not in ["MatMul", "Gemm"]]
+        print(f"Sparsifying {original_onnx_path} with {len(sample_inputs)} samples")
+        for quant in [False, True]:
+            for sparsity in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+                qstr = "-int8" if quant else "-fp32"
+                sstr = f"-{int(sparsity*100)}sparse" if sparsity else "-dense"
+                filename, file_extention = os.path.splitext(original_onnx_path)
+                new_onnx_path = filename + f"{qstr}{sstr}-OBC" + file_extention
+                model = sparsify_fast(
+                    model=original_onnx_path,
+                    sample_input=sample_inputs,
+                    batches=len(sample_inputs),
+                    sparsity=sparsity,
+                    quantization=dict(ignore=IGNORE_LIST) if quant else False,
+                    save_path=new_onnx_path
+                    )
+                print(f"Sparsified model at {new_onnx_path}")
+
+    def __del__(self):
+        # on destruction is when we sparsify!
+        if os.environ.get("SPARSIFY"):
+            self.sparsify_model(self._visual_path, self.visual_samples)
+            self.sparsify_model(self._textual_path, self.textual_samples)
 
     # dummy function
     def eval(self):
         pass
 
-class CLIPDeepsparseModel(BaseCLIPModel):
+class CLIPDeepsparseModel(CLIPOnnxModel):
     def __init__(
         self, name: str, model_path: str = None, dtype: Optional[str] = 'fp32'
     ):
         super().__init__(name)
-        self._dtype = dtype
-        if name in _MODELS:
-            if not model_path:
-                cache_dir = os.path.expanduser(
-                    f'~/.cache/clip/{name.replace("/", "-").replace("::", "-")}'
-                )
-                textual_model_name, textual_model_md5 = _MODELS[name][0]
-                self._textual_path = download_model(
-                    url=_S3_BUCKET_V2 + textual_model_name,
-                    target_folder=cache_dir,
-                    md5sum=textual_model_md5,
-                    with_resume=True,
-                )
-                visual_model_name, visual_model_md5 = _MODELS[name][1]
-                self._visual_path = download_model(
-                    url=_S3_BUCKET_V2 + visual_model_name,
-                    target_folder=cache_dir,
-                    md5sum=visual_model_md5,
-                    with_resume=True,
-                )
-            else:
-                if os.path.isdir(model_path):
-                    self._textual_path = os.path.join(model_path, 'textual.onnx')
-                    self._visual_path = os.path.join(model_path, 'visual.onnx')
-                    if not os.path.isfile(self._textual_path) or not os.path.isfile(
-                        self._visual_path
-                    ):
-                        raise RuntimeError(
-                            f'The given model path {model_path} does not contain `textual.onnx` and `visual.onnx`'
-                        )
-                else:
-                    raise RuntimeError(
-                        f'The given model path {model_path} should be a folder containing both '
-                        f'`textual.onnx` and `visual.onnx`.'
-                    )
-        else:
-            raise RuntimeError(
-                'CLIP model {} not found or not supports ONNX backend; below is a list of all available models:\n{}'.format(
-                    name,
-                    ''.join(['\t- {}\n'.format(i) for i in list(_MODELS.keys())]),
-                )
-            )
 
     def start_sessions(
         self,
-        dtype,
         batch_size,
         **kwargs,
     ):
-        self._batch_size = batch_size
+        super().start_sessions(dtype, batch_size, **kwargs)
+
+        # Override sessions with DeepSparse
         self._visual_session = deepsparse.Engine(self._visual_path, batch_size=batch_size, input_shapes=[[1,3,240,240]])
         self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77],[1,77]])
 
     def encode_image(self, image_input: Dict):
         pixel_values = numpy.array(image_input.cpu())
+        for i in range(pixel_values.shape[0]):
+            if len(self.visual_samples) < self.max_samples:
+                self.visual_samples.append([pixel_values[i]])
         (visual_output,) = self.batched_run(self._visual_session, [pixel_values])
-        return torch.Tensor(visual_output).to("cpu")
+        return torch.Tensor(visual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def encode_text(self, text_input: Dict):
         input_ids = numpy.array(text_input.cpu(), dtype=numpy.int32)
         attention_mask = (input_ids != 0).astype(numpy.int32)
+        for i in range(input_ids.shape[0]):
+            if len(self.textual_samples) < self.max_samples:
+                self.textual_samples.append([input_ids[i], attention_mask[i]])
         (textual_output,) = self.batched_run(self._textual_session, [input_ids, attention_mask])
-        return torch.Tensor(textual_output).to("cpu")
+        return torch.Tensor(textual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def pad_to_batch(self, x):
         orig_batch_size = x.shape[0]
@@ -234,11 +225,6 @@ class CLIPDeepsparseModel(BaseCLIPModel):
 
         # return the final outputs
         return [numpy.concatenate(outputs, axis=0)]
-
-    # dummy function
-    def eval(self):
-        pass
-
 
 
 _S3_BUCKET = (
