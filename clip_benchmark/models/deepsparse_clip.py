@@ -14,7 +14,7 @@ def load_deepsparse_clip(model_name: str = "ViT-B-32-quickgelu", pretrained: str
     model, _, transform = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, cache_dir=cache_dir)
 
     model = CLIPDeepsparseModel(name=f"{model_name}::{pretrained}")
-    model.start_sessions(batch_size=batch_size, providers=['CPUExecutionProvider'])
+    model.start_sessions(providers=['CPUExecutionProvider'], batch_size=batch_size)
 
     tokenizer = open_clip.get_tokenizer(model_name)
     return model, transform, tokenizer
@@ -40,7 +40,8 @@ class CLIPOnnxModel(BaseCLIPModel):
         self._dtype = dtype
         if name in _MODELS:
             self._cache_dir = os.path.expanduser(
-                f'~/.cache/clip/{name.replace("/", "-").replace("::", "-")}'
+                f'./models-rs/{name.replace("/", "-").replace("::", "-")}'
+                # f'~/.cache/clip/{name.replace("/", "-").replace("::", "-")}'
             )
             if not model_path:
                 textual_model_name, textual_model_md5 = _MODELS[name][0]
@@ -117,13 +118,19 @@ class CLIPOnnxModel(BaseCLIPModel):
         (visual_output,) = self._visual_session.run(None, {'pixel_values':pixel_values})
         return torch.Tensor(visual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
+    # def encode_text(self, text_input: Dict):
+    #     input_ids = numpy.array(text_input.cpu(), dtype=numpy.int32)
+    #     attention_mask = (input_ids != 0).astype(numpy.int32)
+    #     for i in range(input_ids.shape[0]):
+    #         if len(self.textual_samples) < self.max_samples:
+    #             self.textual_samples.append([input_ids[i], attention_mask[i]])
+    #     (textual_output,) = self._textual_session.run(None, {'input_ids':input_ids, 'attention_mask':attention_mask})
+    #     return torch.Tensor(textual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
+
     def encode_text(self, text_input: Dict):
         input_ids = numpy.array(text_input.cpu(), dtype=numpy.int32)
-        attention_mask = (input_ids != 0).astype(numpy.int32)
-        for i in range(input_ids.shape[0]):
-            if len(self.textual_samples) < self.max_samples:
-                self.textual_samples.append([input_ids[i], attention_mask[i]])
-        (textual_output,) = self._textual_session.run(None, {'input_ids':input_ids, 'attention_mask':attention_mask})
+        # attention_mask = (input_ids != 0).astype(numpy.int32)
+        (textual_output,) = self._textual_session.run(None, {'input_ids':input_ids})
         return torch.Tensor(textual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def sparsify_model(self, original_onnx_path, sample_inputs):
@@ -169,11 +176,12 @@ class CLIPDeepsparseModel(CLIPOnnxModel):
         batch_size,
         **kwargs,
     ):
-        super().start_sessions(dtype, batch_size, **kwargs)
+        super().start_sessions(batch_size, **kwargs)
 
         # Override sessions with DeepSparse
         self._visual_session = deepsparse.Engine(self._visual_path, batch_size=batch_size, input_shapes=[[1,3,240,240]])
-        self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77],[1,77]])
+        # self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77],[1,77]])
+        self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77]])
 
     def encode_image(self, image_input: Dict):
         pixel_values = numpy.array(image_input.cpu())
@@ -183,13 +191,18 @@ class CLIPDeepsparseModel(CLIPOnnxModel):
         (visual_output,) = self.batched_run(self._visual_session, [pixel_values])
         return torch.Tensor(visual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    def encode_text(self, text_input: Dict):
+    # def encode_text(self, text_input: Dict):
+    #     input_ids = numpy.array(text_input.cpu(), dtype=numpy.int32)
+    #     attention_mask = (input_ids != 0).astype(numpy.int32)
+    #     for i in range(input_ids.shape[0]):
+    #         if len(self.textual_samples) < self.max_samples:
+    #             self.textual_samples.append([input_ids[i], attention_mask[i]])
+    #     (textual_output,) = self.batched_run(self._textual_session, [input_ids, attention_mask])
+    #     return torch.Tensor(textual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
+    
+    def encode_text(self, text_input):
         input_ids = numpy.array(text_input.cpu(), dtype=numpy.int32)
-        attention_mask = (input_ids != 0).astype(numpy.int32)
-        for i in range(input_ids.shape[0]):
-            if len(self.textual_samples) < self.max_samples:
-                self.textual_samples.append([input_ids[i], attention_mask[i]])
-        (textual_output,) = self.batched_run(self._textual_session, [input_ids, attention_mask])
+        (textual_output,) = self.batched_run(self._textual_session, [input_ids])
         return torch.Tensor(textual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def pad_to_batch(self, x):

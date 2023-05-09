@@ -199,7 +199,8 @@ def run(args):
             except TypeError:
                 print("IterableDataset has no len()")
             print(f"Dataset split: {args.split}")
-            if dataset.classes:
+
+            if hasattr(dataset, 'classes') and dataset.classes:
                 try:
                     print(f"Dataset classes: {dataset.classes}")
                     print(f"Dataset number of classes: {len(dataset.classes)}")
