@@ -58,6 +58,7 @@ def evaluate(model, dataloader, tokenizer,  device, amp=True, recall_k_list=[5])
         texts_image_index.extend(batch_texts_image_index)
         
     batch_size = len(batch_images_emb_list[0])
+    print(f"BATCH_SIZE = {batch_size}")
 
     # concatenate all embeddings
     images_emb = torch.cat(batch_images_emb_list)

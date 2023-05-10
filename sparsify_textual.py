@@ -8,6 +8,7 @@ import numpy as np
 from clip_server.model.pretrained_models import download_model
 from clip_benchmark.models import load_clip
 from clip_benchmark.datasets.builder import build_dataset
+from datasets import load_dataset
 
 import onnx, os
 from sparsifyml.one_shot import sparsify_fast
@@ -107,7 +108,7 @@ def download_branch(data, target_folder):
 
 def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsity_algo="FastOBCQ", str_append=None, fastobcq_block_size=64):
 
-    model_type = "deepsparse_clip"
+    model_type = "onnx_clip"
     model_name = "ViT-B-16-plus-240"
     pretrained = "laion400m_e32"
     dataset_name = "imagenet1k"
@@ -124,19 +125,28 @@ def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsi
 
     print(f"TEXTUAL_PATH = {textual_path}")
     
-    # build dataset for textual samples
-    _, transform, tokenizer = load_clip(model_type=model_type, model_name=model_name, pretrained=pretrained, cache_dir=f"./models-rs/{model_name}-{pretrained}", batch_size=64,)
-    dataset = build_dataset(dataset_name=dataset_name, root=dataset_root, transform=transform, download=True, task=task,)
+    # # build dataset for textual samples
+    _, _, tokenizer = load_clip(model_type=model_type, model_name=model_name, pretrained=pretrained, cache_dir=f"./models-rs/{model_name}-{pretrained}", batch_size=64,)
+    # dataset = build_dataset(dataset_name=dataset_name, root=dataset_root, transform=transform, download=True, task=task,)
+    # textual_samples = []
+    # raw_textual_samples = []
+    # for classname in tqdm(dataset.classes):
+    #     texts = [template.format(c=classname) for template in dataset.templates]
+    #     text = texts[randint(0,79)]
+    #     raw_textual_samples.append(text)
+    #     text_input = tokenizer(text)[0]
+    #     input_ids = np.array(text_input.cpu(), dtype=np.int32)
+    #     # attention_mask = (input_ids != 0).astype(np.int32)
+    #     # textual_samples.append([input_ids, attention_mask])
+    #     textual_samples.append(input_ids)
+
     textual_samples = []
-    raw_textual_samples = []
-    for classname in tqdm(dataset.classes):
-        texts = [template.format(c=classname) for template in dataset.templates]
-        text = texts[randint(0,79)]
-        raw_textual_samples.append(text)
-        text_input = tokenizer(text)[0]
+    dataset = load_dataset("imdb", split="train")
+
+    for i in range(NUM_CALIBRATION_SAMPLES):
+        row = dataset[i]
+        text_input = tokenizer(row["text"])[0]
         input_ids = np.array(text_input.cpu(), dtype=np.int32)
-        # attention_mask = (input_ids != 0).astype(np.int32)
-        # textual_samples.append([input_ids, attention_mask])
         textual_samples.append(input_ids)
 
     # run sparsification algorithm

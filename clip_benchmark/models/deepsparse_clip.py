@@ -4,7 +4,7 @@ def load_onnx_clip(model_name: str = "ViT-B-32-quickgelu", pretrained: str = "la
     model, _, transform = open_clip.create_model_and_transforms(model_name, pretrained=pretrained, cache_dir=cache_dir)
 
     model = CLIPOnnxModel(name=f"{model_name}::{pretrained}")
-    providers = ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'] if torch.cuda.is_available() else ['CPUExecutionProvider']
+    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if torch.cuda.is_available() else ['CPUExecutionProvider']
     model.start_sessions(providers=providers, batch_size=batch_size)
 
     tokenizer = open_clip.get_tokenizer(model_name)
