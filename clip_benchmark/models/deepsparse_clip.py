@@ -97,6 +97,7 @@ class CLIPOnnxModel(BaseCLIPModel):
 
         self._visual_path = f"{self._cache_dir}/{visual_model}"
         self._textual_path = f"{self._cache_dir}/{textual_model}"
+        
         print("Compiling models..")
         print(self._visual_path)
         print(self._textual_path)

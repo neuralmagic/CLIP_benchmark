@@ -1,6 +1,7 @@
 MODEL_NAME = "visual_export.onnx"
-NUM_CALIBRATION_SAMPLES = 1000
+NUM_CALIBRATION_SAMPLES = 10000
 
+import torch
 import os, open_clip, torchvision, argparse
 import numpy as np
 from clip_server.model.pretrained_models import download_model
@@ -8,7 +9,7 @@ from clip_server.model.pretrained_models import download_model
 import onnx, os
 from sparsifyml.one_shot import sparsify_fast
 
-def sparsify_model(model_path, sample_inputs, quant=False, quantization_algo="MinMax", sparsity=None, sparsity_algo="FastOBCQ"):
+def sparsify_model(model_path, sample_inputs, quant=False, quantization_algo="MinMax", sparsity=None, sparsity_algo="FastOBCQ", str_append=None):
     assert(quantization_algo == "MinMax" or quantization_algo=="OBQ" or quantization_algo=="FastOBCQ")
     assert(sparsity_algo == "FastOBCQ" or sparsity_algo == "OBC")
 
@@ -34,7 +35,10 @@ def sparsify_model(model_path, sample_inputs, quant=False, quantization_algo="Mi
         sstr = "-dense"
     
     filename, file_extention = os.path.splitext(model_path)
-    new_model_path = filename + f"{qstr}{sstr}" + file_extention
+    if str_append is None:
+        new_model_path = filename + f"{qstr}{sstr}" + file_extention
+    else:
+        new_model_path = filename + f"{qstr}{sstr}{str_append}" + file_extention
 
     model = sparsify_fast(
         model=model_path,
@@ -50,10 +54,12 @@ def sparsify_model(model_path, sample_inputs, quant=False, quantization_algo="Mi
     print(f"Sparsified model at {new_model_path}")
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--model_path', type=str, default=MODEL_NAME)
 parser.add_argument('--sparsity', type=float, default=None)
 parser.add_argument('--sparsity_algo', type=str, default="FastOBCQ")
 parser.add_argument('--quantization', action='store_true')
 parser.add_argument('--quantization_algo', type=str, default="FastOBCQ")
+parser.add_argument('--str_append', type=str, default=None)
 
 _S3_BUCKET_V2 = 'https://clip-as-service.s3.us-east-2.amazonaws.com/models-436c69702d61732d53657276696365/onnx/'
 
@@ -90,9 +96,10 @@ def download_branch(data, target_folder):
         with_resume=True
     )
 
-def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsity_algo="FastOBCQ"):
+def main(model_path, quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsity_algo="FastOBCQ", str_append=None):
     
-    base_dir = "datasets/imagenet"
+    # base_dir = "datasets/imagenet"
+    base_dir = "/home/ubuntu/datasets/VOC_ex"
     model_name = "ViT-B-16-plus-240"
     pretrained = "laion400m_e32"
 
@@ -102,7 +109,7 @@ def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsi
     )
 
     if os.path.isdir(download_dir):
-        visual_path = os.path.join(download_dir, MODEL_NAME)
+        visual_path = os.path.join(download_dir, model_path)
     else:
         _, visual_path = download(name, download_dir)
 
@@ -112,11 +119,13 @@ def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsi
 
     dataset = torchvision.datasets.ImageFolder(
         root=base_dir,
-        transform=transform)
+        transform=transform,)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=True, sampler=None)
 
     visual_samples = []
     i = 0
-    for im, _ in dataset:
+    for batch in iter(dataloader):
+        im = batch[0][0]
         visual_samples.append(np.array(im.cpu()))
         i+=1
         if i > NUM_CALIBRATION_SAMPLES:
@@ -128,12 +137,15 @@ def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsi
                    quant=quantization, 
                    sparsity=sparsity, 
                    quantization_algo=quantization_algo,
-                   sparsity_algo=sparsity_algo)
+                   sparsity_algo=sparsity_algo,
+                   str_append=str_append)
 
 if __name__ == "__main__":
     args = parser.parse_args()
     
-    main(quantization=args.quantization, 
+    main(model_path=args.model_path,
+         quantization=args.quantization, 
          sparsity=args.sparsity, 
          quantization_algo=args.quantization_algo, 
-         sparsity_algo=args.sparsity_algo)
+         sparsity_algo=args.sparsity_algo,
+         str_append=args.str_append)

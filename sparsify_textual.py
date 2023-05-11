@@ -1,13 +1,15 @@
 MODEL_NAME = "textual_export.onnx"
-NUM_CALIBRATION_SAMPLES = 1000
+NUM_CALIBRATION_SAMPLES = 10000
+DATASET = "MSCOCO"
 
+import torch
 from tqdm import tqdm
 from random import randint
 import argparse, os
 import numpy as np
 from clip_server.model.pretrained_models import download_model
 from clip_benchmark.models import load_clip
-from clip_benchmark.datasets.builder import build_dataset
+from clip_benchmark.datasets.builder import build_dataset, get_dataset_collate_fn
 from datasets import load_dataset
 
 import onnx, os
@@ -64,6 +66,7 @@ def sparsify_model(model_path, sample_inputs,
     print(f"Sparsified model at {new_model_path}")
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--model_path', type=str, default=MODEL_NAME)
 parser.add_argument('--sparsity', type=float, default=None)
 parser.add_argument('--sparsity_algo', type=str, default="FastOBCQ")
 parser.add_argument('--quantization', action='store_true')
@@ -106,27 +109,24 @@ def download_branch(data, target_folder):
         with_resume=True
     )
 
-def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsity_algo="FastOBCQ", str_append=None, fastobcq_block_size=64):
+def main(model_path, quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsity_algo="FastOBCQ", str_append=None, fastobcq_block_size=64):
 
     model_type = "onnx_clip"
     model_name = "ViT-B-16-plus-240"
     pretrained = "laion400m_e32"
-    dataset_name = "imagenet1k"
-    task = "zeroshot_classification"
-    dataset_root = "root".format(dataset=dataset_name, dataset_cleaned=dataset_name.replace("/", "-"))
 
     # download base model
     name = f"{model_name}::{pretrained}"
     download_dir = os.path.expanduser(f'models-rs/{name.replace("/", "-").replace("::", "-")}')
     if os.path.isdir(download_dir):
-        textual_path = os.path.join(download_dir, MODEL_NAME)
+        textual_path = os.path.join(download_dir, model_path)
     else:
         textual_path, _ = download(name, download_dir)
 
     print(f"TEXTUAL_PATH = {textual_path}")
     
     # # build dataset for textual samples
-    _, _, tokenizer = load_clip(model_type=model_type, model_name=model_name, pretrained=pretrained, cache_dir=f"./models-rs/{model_name}-{pretrained}", batch_size=64,)
+    _, transform, tokenizer = load_clip(model_type=model_type, model_name=model_name, pretrained=pretrained, cache_dir=f"./models-rs/{model_name}-{pretrained}", batch_size=64,)
     # dataset = build_dataset(dataset_name=dataset_name, root=dataset_root, transform=transform, download=True, task=task,)
     # textual_samples = []
     # raw_textual_samples = []
@@ -141,13 +141,35 @@ def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsi
     #     textual_samples.append(input_ids)
 
     textual_samples = []
-    dataset = load_dataset("imdb", split="train")
+    
+    if DATASET == "IMDB":
+        dataset = load_dataset("imdb", split="train")
 
-    for i in range(NUM_CALIBRATION_SAMPLES):
-        row = dataset[i]
-        text_input = tokenizer(row["text"])[0]
-        input_ids = np.array(text_input.cpu(), dtype=np.int32)
-        textual_samples.append(input_ids)
+        for i in range(NUM_CALIBRATION_SAMPLES):
+            row = dataset[i]
+            text_input = tokenizer(row["text"])[0]
+            input_ids = np.array(text_input.cpu(), dtype=np.int32)
+            textual_samples.append(input_ids)
+    
+    elif DATASET == "MSCOCO":
+        dataset_name = "mscoco_captions"
+        task = "zeroshot_retrieval"
+        dataset_root = "root"
+
+        dataset = build_dataset(dataset_name=dataset_name, root=dataset_root, transform=transform, download=True, task=task, split="train")
+        collate_fn = get_dataset_collate_fn(dataset_name)
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=collate_fn)
+
+        batches = iter(dataloader)
+        for i in range(NUM_CALIBRATION_SAMPLES):
+            img, captions = next(batches)
+            caption = captions[0][0] # choose first text from list
+            text_input = tokenizer(caption)[0]
+            input_ids = np.array(text_input.cpu(), dtype=np.int32)
+            textual_samples.append(input_ids)
+    
+    else:
+        assert False
 
     # run sparsification algorithm
     sparsify_model(textual_path, 
@@ -162,7 +184,8 @@ def main(quantization=False, sparsity=None, quantization_algo="FastOBCQ", sparsi
 if __name__ == "__main__":
     args = parser.parse_args()
     
-    main(quantization=args.quantization, 
+    main(model_path=args.model_path,
+         quantization=args.quantization, 
          sparsity=args.sparsity, 
          quantization_algo=args.quantization_algo, 
          sparsity_algo=args.sparsity_algo,
