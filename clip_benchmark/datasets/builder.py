@@ -380,7 +380,7 @@ def get_dataset_default_task(dataset):
         return "zeroshot_classification"
 
 def get_dataset_collate_fn(dataset_name):
-    if dataset_name in ("mscoco_captions", "multilingual_mscoco_captions", "flickr30k", "flickr8k"):
+    if dataset_name in ("mscoco_captions", "multilingual_mscoco_captions", "flickr30k", "flickr8k", "laion"):
         return image_captions_collate_fn
     else:
         return default_collate
