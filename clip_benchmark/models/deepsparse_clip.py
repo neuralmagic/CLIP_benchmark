@@ -182,7 +182,7 @@ class CLIPDeepsparseModel(CLIPOnnxModel):
         # Override sessions with DeepSparse
         self._visual_session = deepsparse.Engine(self._visual_path, batch_size=batch_size, input_shapes=[[1,3,240,240]])
         # self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77],[1,77]])
-        self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77]])
+        self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77], [1]])
 
     def encode_image(self, image_input: Dict):
         pixel_values = numpy.array(image_input.cpu())
@@ -203,7 +203,8 @@ class CLIPDeepsparseModel(CLIPOnnxModel):
     
     def encode_text(self, text_input):
         input_ids = numpy.array(text_input.cpu(), dtype=numpy.int32)
-        (textual_output,) = self.batched_run(self._textual_session, [input_ids])
+        seq_len = input_ids.argmax(axis=-1)
+        (textual_output,) = self.batched_run(self._textual_session, [input_ids, seq_len])
         return torch.Tensor(textual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def pad_to_batch(self, x):

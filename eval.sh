@@ -1,0 +1,1 @@
+VISUAL_MODEL=$1 TEXTUAL_MODEL=$2 clip_benchmark eval --dataset=wds/imagenet_1k --dataset_root=https://huggingface.co/datasets/clip-benchmark/wds_imagenet1k/tree/main --task=zeroshot_classification --pretrained=laion400m_e32 --model=ViT-B-16-plus-240 --batch_size=64 --model_type deepsparse_clip --output=results/$3.json
