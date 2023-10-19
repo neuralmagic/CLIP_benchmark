@@ -41,8 +41,10 @@ def evaluate(model, dataloader, tokenizer,  device, amp=True, recall_k_list=[5])
     texts_image_index = []
     dataloader = dataloader_with_indices(dataloader)
     autocast = torch.cuda.amp.autocast if amp else suppress
+
     for batch_images, batch_texts, inds in tqdm(dataloader):
         batch_images = batch_images.to(device)
+
         # tokenize all texts in the batch
         batch_texts_tok = tokenizer([text for i, texts in enumerate(batch_texts) for text in texts]).to(device)
         # store the index of image for each text
