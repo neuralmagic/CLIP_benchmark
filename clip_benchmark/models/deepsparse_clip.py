@@ -43,6 +43,7 @@ class CLIPOnnxModel(BaseCLIPModel):
                 f'./models-rs/{name.replace("/", "-").replace("::", "-")}'
                 # f'~/.cache/clip/{name.replace("/", "-").replace("::", "-")}'
             )
+            model_path = self._cache_dir
             if not model_path:
                 textual_model_name, textual_model_md5 = _MODELS[name][0]
                 self._textual_path = download_model(
