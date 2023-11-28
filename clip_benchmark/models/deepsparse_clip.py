@@ -60,6 +60,7 @@ class CLIPOnnxModel(BaseCLIPModel):
                     with_resume=True,
                 )
             else:
+                #model_path = "models-rs/ViT-B-32-laion400m_e32"
                 if os.path.isdir(model_path):
                     self._textual_path = os.path.join(model_path, 'textual.onnx')
                     self._visual_path = os.path.join(model_path, 'visual.onnx')
@@ -94,7 +95,7 @@ class CLIPOnnxModel(BaseCLIPModel):
         # Optional overrides
         visual_model = os.environ.get("VISUAL_MODEL", "visual.onnx")
         textual_model = os.environ.get("TEXTUAL_MODEL", "textual.onnx")
-        print(visual_model, textual_model)
+        print("!!!!!!!!!!!!!!!!!", visual_model, textual_model)
 
         self._visual_path = f"{self._cache_dir}/{visual_model}"
         self._textual_path = f"{self._cache_dir}/{textual_model}"
@@ -181,7 +182,8 @@ class CLIPDeepsparseModel(CLIPOnnxModel):
         super().start_sessions(batch_size, **kwargs)
 
         # Override sessions with DeepSparse
-        self._visual_session = deepsparse.Engine(self._visual_path, batch_size=batch_size, input_shapes=[[1,3,240,240]])
+        self._visual_session = deepsparse.Engine(self._visual_path, batch_size=batch_size, input_shapes=[[1,3,256,256]])
+        #self._visual_session = deepsparse.Engine(self._visual_path, batch_size=batch_size, input_shapes=[[1,3,240,240]])
         # self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77],[1,77]])
         self._textual_session = deepsparse.Engine(self._textual_path, batch_size=batch_size, input_shapes=[[1,77], [1]])
 
@@ -190,6 +192,7 @@ class CLIPDeepsparseModel(CLIPOnnxModel):
         for i in range(pixel_values.shape[0]):
             if len(self.visual_samples) < self.max_samples:
                 self.visual_samples.append([pixel_values[i]])
+        print("pixel values", pixel_values.shape)
         (visual_output,) = self.batched_run(self._visual_session, [pixel_values])
         return torch.Tensor(visual_output).to("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -293,6 +296,10 @@ _MODELS = {
         ('ViT-B-32-laion400m_e31/visual.onnx', '62326b925ae342313d4cc99c2741b313'),
     ),
     'ViT-B-32::laion400m_e32': (
+        ('ViT-B-32-laion400m_e32/textual.onnx', '93284915937ba42a2b52ae8d3e5283a0'),
+        ('ViT-B-32-laion400m_e32/visual.onnx', 'db220821a31fe9795fd8c2ba419078c5'),
+    ),
+    'ViT-B-32-256::datacomp2b_e32': (
         ('ViT-B-32-laion400m_e32/textual.onnx', '93284915937ba42a2b52ae8d3e5283a0'),
         ('ViT-B-32-laion400m_e32/visual.onnx', 'db220821a31fe9795fd8c2ba419078c5'),
     ),
